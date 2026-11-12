@@ -135,14 +135,12 @@ class PackageCheckTests(unittest.TestCase):
 
     def test_personal_and_dev_files_are_flagged(self):
         files = dict(GOOD_FILES)
-        for name in ("user_files/config.json", "user_files/settings.json", "meta.json", "CLAUDE.md", "DESCRIPTION.md",
-                     "tools/x.py", "tests/t.py", "docs/a.png", "__pycache__/a.pyc", ".gitignore", ".DS_Store",
-                     "sub/__pycache__/b.pyc"):
-            files[name] = b""
+        leaks = ["user_files/config.json", "user_files/settings.json", "meta.json", "CLAUDE.md", "DESCRIPTION.md",
+                 "justfile", "tools/x.py", "tests/t.py", "docs/a.png", "__pycache__/a.pyc", ".gitignore", ".DS_Store",
+                 "sub/__pycache__/b.pyc"]
+        files.update({name: b"" for name in leaks})
         flagged = {line.split(" must not")[0] for line in release.package_problems(files)}
-        self.assertEqual(flagged, {"user_files/config.json", "user_files/settings.json", "meta.json", "CLAUDE.md",
-                                   "DESCRIPTION.md", "tools/x.py", "tests/t.py", "docs/a.png", "__pycache__/a.pyc",
-                                   ".gitignore", ".DS_Store", "sub/__pycache__/b.pyc"})
+        self.assertEqual(flagged, set(leaks))
 
     def test_the_files_must_be_at_the_root_of_the_zip(self):
         problems = release.package_problems({f"colorcoding/{name}": content for name, content in GOOD_FILES.items()})

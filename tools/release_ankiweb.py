@@ -68,7 +68,8 @@ FOXMCP_CLIENT_DIR = Path(os.environ.get("FOXMCP_CLIENT_DIR") or Path.home() / "b
 
 # Never in the package (`git archive` honours .gitattributes, this is the second line of defence).
 FORBIDDEN_DIRS = ("docs/", "tools/", "tests/", ".git", ".claude", "__pycache__/")
-FORBIDDEN_NAMES = {"meta.json", "CLAUDE.md", DESCRIPTION_FILE, "user_files/config.json", "user_files/settings.json"}
+FORBIDDEN_NAMES = {"meta.json", "CLAUDE.md", DESCRIPTION_FILE, "justfile", "user_files/config.json",
+                   "user_files/settings.json"}
 
 
 class ReleaseError(RuntimeError):

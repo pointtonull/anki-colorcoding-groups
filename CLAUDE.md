@@ -24,21 +24,25 @@ from Marc Schubert's AnkiWeb "ColorCoding" (no upstream licence — see `NOTICE`
 - `manifest.json` — add-on identity (`package: colorcoding_groups`, distinct from upstream).
 - `user_files/` — runtime data. `config.example.json` is the only tracked file besides `.gitkeep`; it is also the
   demo vocabulary of the screenshots and of the sandbox checks.
-- `tests/` — unit tests for `colorize.py`: `python3 -m unittest discover -s tests`.
+- `tests/` — unit tests (`colorize`, `palette`, `embeddings`, the release script): `python3 -m unittest discover -s tests`.
+- `justfile` — the [just](https://github.com/casey/just) task runner (`brew install just`; plain `just` lists the recipes). It
+  only names and chains the commands below, with no logic of its own, so every command also works without just. Add a
+  recipe when you add a script; keep the logic in the script.
 - `docs/screenshots/` — the README/AnkiWeb images.
 - `tools/` — the throwaway-Anki harness: `sandbox.py` (launcher), `driver_kit.py` (waits, watchdogs; runs inside Anki),
   `make_screenshots.py` + `screenshot_driver.py`, `check_in_anki.py` + `integration_driver.py`, `fake_embeddings.py` (a
   fake OpenAI-compatible server the drivers run in-process: no key, no network), `check_harness.py` (proves the harness
   fails fast and clean), `release_ankiweb.py` (the release script, see *Releasing to AnkiWeb*; unit-tested in
   `tests/test_release_ankiweb.py` against a fake FoxMCP). `DESCRIPTION.md` is the listing's description.
-  `docs/`, `tools/`, `tests/`, `DESCRIPTION.md` and this file are `export-ignore`d: the AnkiWeb package is
+  `docs/`, `tools/`, `tests/`, `DESCRIPTION.md`, `justfile` and this file are `export-ignore`d: the AnkiWeb package is
   `__init__.py`, `colorize.py`, `palette.py`, `embeddings.py`, `changer_static.js`, `manifest.json`, icon, README,
   LICENSE, NOTICE, `user_files/`.
 
 ## Testing
 
-Before any release (`tools/release_ankiweb.py` runs 1 and 2 for you), run all three; none needs you to touch anything, and
-each ends in a clear verdict:
+Recipes: `just verify` (1 and syntax), `just check` (2), `just shots` (3), `just harness`. Before any release
+(`tools/release_ankiweb.py` runs 1 and 2 for you), run all three; none needs you to touch anything, and each ends in a
+clear verdict:
 1. `python3 -m unittest discover -s tests` (instant).
 2. `python3 tools/check_in_anki.py` and again with `--addon-folder 267803161` (AnkiWeb installs use the number, which
    matters for relative imports). ~1 min each; windows of a second Anki flash up.
@@ -64,8 +68,8 @@ Harness rules learnt the hard way — keep them:
 ## Releasing to AnkiWeb
 
 Listed at https://ankiweb.net/shared/info/267803161 (code `267803161`, Carlos's AnkiWeb account). One script does it:
-`python3 tools/release_ankiweb.py` (see its `--help`). It needs Firefox open with the FoxMCP extension, and re-runs itself on
-FoxMCP's venv Python.
+`python3 tools/release_ankiweb.py` (see its `--help`), or `just release` (and `just release-dry-run`, `just release-check`,
+`just pull-description`). It needs Firefox open with the FoxMCP extension, and re-runs itself on FoxMCP's venv Python.
 1. Edit **`DESCRIPTION.md`** (repo root, export-ignored) when the listing text should change: it is the source of truth for
    the AnkiWeb description (Markdown + basic HTML). `python3 tools/release_ankiweb.py --pull-description` adopts edits made
    on the website. The listing hosts no images: it points at the screenshots on GitHub
