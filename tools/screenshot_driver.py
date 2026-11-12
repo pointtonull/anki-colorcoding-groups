@@ -209,6 +209,31 @@ def scenario():
     save_popup(menu, "deck-menu.png")
     menu.close()
 
+    kit.step("the colour suggestions dialog")
+    from . import fake_embeddings
+    fake = fake_embeddings.FakeEmbeddings()
+    base_url = fake.start()  # a stand-in for the embedding service; the meaning of the group names is invented
+    demo_groups = {name: {"color": color, "bold": False} for name, color in (
+        ("Cities", "#e6b422"), ("Countries", "#5dade2"), ("Rivers", "#e67e22"), ("Drugs", "#58d68d"),
+        ("Diseases", "#ec7063"), ("Python", "#af7ac5"), ("JavaScript", "#f4d03f"), ("Dates", "#85c1e9"))}
+    demo_entries = [{"word": word, "group": group} for group, words in (
+        ("Cities", ("London", "Lisbon")), ("Countries", ("Portugal", "Japan")), ("Rivers", ("Thames", "Nile")),
+        ("Drugs", ("ibuprofen", "insulin")), ("Diseases", ("asthma", "measles")),
+        ("Python", ("decorator", "asyncio")), ("JavaScript", ("closure", "promise")), ("Dates", ("1843", "1969")))
+        for word in words]
+    suggest = cc.SuggestColorsDialog(demo_groups, demo_entries, parent=add)
+    suggest.resize(560, 640)
+    suggest.show()
+    yield kit.wait(lambda: kit.exposed(suggest), "the Suggest Colors dialog to appear on screen")
+    suggest.providerCombo.setCurrentIndex(suggest.providerCombo.findData("custom"))
+    suggest.addressEdit.setText(base_url)
+    suggest.modelEdit.setText("fake-model")
+    suggest.suggest()
+    yield kit.wait(lambda: suggest.btnApply.isEnabled(), "the colour suggestions to arrive", 20000)
+    fake.stop()
+    suggest.providerCombo.setCurrentIndex(suggest.providerCombo.findData("ollama"))  # what the picture shows: the local preset
+    yield from shoot_dialog(suggest, "suggest-colors.png", "the colour suggestions")
+
     kit.step("done")
     add.set_note(mw.col.new_note(mw.col.models.by_name("Basic")), mw.col.decks.id("Default"))  # blank: no "Discard?" prompt
     add.close()

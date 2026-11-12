@@ -3,15 +3,16 @@
 from anki import hooks
 from anki.collection import OpChanges, SearchNode
 from aqt import mw
-from aqt.operations import CollectionOp
+from aqt.operations import CollectionOp, QueryOp
 from aqt.qt import *
 from aqt import gui_hooks
 from aqt.utils import askUser, tooltip
 import os
 import json
 import sys
+import traceback
 
-from . import colorize
+from . import colorize, embeddings, palette
 
 from PyQt6.QtWidgets import (QApplication, QWidget, QPushButton, QMainWindow, QTextEdit,
                              QTableWidget, QTableWidgetItem, QVBoxLayout, QHBoxLayout,
@@ -106,6 +107,10 @@ def write_settings(settings):
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
     with open(filepath, "w") as file:
         json.dump(settings, file)
+    try:
+        os.chmod(filepath, 0o600)  # it can hold an API key (see SUGGESTIONS_KEY): readable by this user only
+    except OSError:
+        pass
 
 def read_settings():
     filepath = os.path.join(addon_folder,"user_files", "settings.json")
@@ -659,19 +664,238 @@ class SettingsDialog(QDialog):
 
     @staticmethod
     def write_settings(settings):
-        filepath = os.path.join(addon_folder,"user_files" ,"settings.json")
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        with open(filepath, "w") as file:
-            json.dump(settings, file)
+        write_settings(settings)
 
     @staticmethod
     def read_settings():
-        filepath = os.path.join(addon_folder,"user_files" , "settings.json")
-        if os.path.exists(filepath):
-            with open(filepath) as file:
-                return json.load(file)
-        return {}
+        return read_settings()
 
+
+SUGGESTIONS_KEY = "colorSuggestions"  # in settings.json: {"provider", "baseUrl", "model", "apiKey"}
+
+
+def suggestion_lightness():
+    """OKLCH lightness for suggested colours: bright on a dark theme, darker on a light one (same contrast)."""
+    try:
+        from aqt.theme import theme_manager
+        return palette.LIGHTNESS_DARK if theme_manager.night_mode else palette.LIGHTNESS_LIGHT
+    except Exception:
+        return palette.LIGHTNESS_DARK
+
+
+def compute_color_suggestions(texts, provider, lightness):
+    """[(group name, '#rrggbb')] in colour-wheel order. Network and maths, no Qt: it runs in a background thread.
+    `texts` is [(name, text sent)] from embeddings.group_texts."""
+    vectors = embeddings.request_embeddings([text for _, text in texts], provider["baseUrl"], provider["model"],
+                                            provider["apiKey"])
+    order, colours = palette.suggest_palette(vectors, lightness)
+    return [(texts[i][0], colours[i]) for i in order]
+
+
+def _swatch_item(color):
+    item = QTableWidgetItem(color or "–")
+    if color:
+        background = QColor(color)
+        item.setBackground(background)
+        item.setForeground(QColor("#000000") if background.lightness() > 140 else QColor("#ffffff"))
+    item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+    return item
+
+
+class SuggestColorsDialog(QDialog):
+    """Suggest a colour for every group so that groups with a similar meaning get similar colours (see palette.py).
+
+    The meaning is measured by an embedding model from each group's name and a few of its words, asked of an
+    OpenAI-compatible service (OpenAI, Ollama, ...) only when "Suggest" is pressed. The dialog works on the groups it
+    is given and changes nothing itself: `get_colors()` returns {group: '#rrggbb'} for the rows left ticked."""
+
+    def __init__(self, groups, entries, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Suggest Colors")
+        self.resize(540, 600)
+        self.groups = groups
+        self.texts = embeddings.group_texts(groups, entries)
+        self.suggested = []  # [(group, '#rrggbb')] in colour-wheel order
+        self.checks = {}
+        self._closed = False
+        self._edits = {}  # what was typed for each service, so switching back and forth loses nothing
+
+        stored = embeddings.normalize_provider_settings(read_settings().get(SUGGESTIONS_KEY))
+        self._current = stored["provider"]
+
+        layout = QVBoxLayout()
+        intro = QLabel("Groups with a similar meaning get similar colours. An embedding model measures the meaning "
+                       "from each group's name and a few of its words, which are sent to the service below only "
+                       "when you press Suggest.")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)  # room for a whole URL
+        self.providerCombo = QComboBox()
+        for key, preset in embeddings.PROVIDERS.items():
+            self.providerCombo.addItem(preset["label"], key)
+        self.providerCombo.setCurrentIndex(self.providerCombo.findData(self._current))
+        self.addressEdit = QLineEdit()
+        self.modelEdit = QLineEdit()
+        self.keyEdit = QLineEdit()
+        self.keyEdit.setEchoMode(QLineEdit.EchoMode.Password)
+        form.addRow("Service:", self.providerCombo)
+        form.addRow("Address:", self.addressEdit)
+        form.addRow("Model:", self.modelEdit)
+        form.addRow("API key:", self.keyEdit)
+        layout.addLayout(form)
+        self._load_fields(stored)
+        self.providerCombo.currentIndexChanged.connect(self._switch_provider)
+        self.addressEdit.textChanged.connect(self._update_privacy)
+
+        self.privacyLabel = QLabel()
+        self.privacyLabel.setWordWrap(True)
+        layout.addWidget(self.privacyLabel)
+        self._update_privacy()
+
+        self.btnSuggest = QPushButton("Suggest")
+        self.btnSuggest.clicked.connect(self.suggest)
+        layout.addWidget(self.btnSuggest)
+
+        self.statusLabel = QLabel("")
+        self.statusLabel.setWordWrap(True)
+        layout.addWidget(self.statusLabel)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["Use", "Group", "Now", "Suggested"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        layout.addWidget(self.table)
+
+        buttons = QHBoxLayout()
+        self.btnApply = QPushButton("Apply")
+        self.btnApply.setEnabled(False)
+        self.btnApply.clicked.connect(self.accept)
+        self.btnCancel = QPushButton("Cancel")
+        self.btnCancel.clicked.connect(self.reject)
+        buttons.addWidget(self.btnApply)
+        buttons.addWidget(self.btnCancel)
+        layout.addLayout(buttons)
+
+        self.setLayout(layout)
+
+    # --- the service ---------------------------------------------------------------------------------------------
+
+    def _fields(self):
+        return {"baseUrl": self.addressEdit.text().strip(), "model": self.modelEdit.text().strip(),
+                "apiKey": self.keyEdit.text().strip()}
+
+    def _load_fields(self, settings):
+        self.addressEdit.setText(settings["baseUrl"])
+        self.modelEdit.setText(settings["model"])
+        self.keyEdit.setText(settings["apiKey"])
+        self.keyEdit.setPlaceholderText({"openai": "sk-… (or set OPENAI_API_KEY)",
+                                         "ollama": "not needed"}.get(self._current, "only if the service needs one"))
+
+    def _switch_provider(self, index):
+        self._edits[self._current] = self._fields()
+        self._current = self.providerCombo.itemData(index)
+        typed = self._edits.get(self._current, {})  # empty fields fall back to the new service's preset
+        self._load_fields(embeddings.normalize_provider_settings({"provider": self._current, **typed}))
+        self._update_privacy()
+
+    def provider_settings(self):
+        """What a request uses: the fields as typed, an empty OpenAI key read from OPENAI_API_KEY."""
+        return embeddings.normalize_provider_settings({"provider": self._current, **self._fields()}, os.environ)
+
+    def _update_privacy(self, *_):
+        address = self.addressEdit.text()
+        host = embeddings.host_of(address)
+        if not host:
+            text = "Enter the address of an OpenAI-compatible service."
+        elif embeddings.sends_off_this_computer(address):
+            text = (f"Pressing Suggest sends {len(self.texts)} group names and up to {embeddings.MAX_WORDS_PER_GROUP} "
+                    f"of their words each to {host}.")
+        else:
+            text = f"Everything stays on this computer ({host})."
+        self.privacyLabel.setText(text)
+
+    def _status(self, text, error=False):
+        self.statusLabel.setStyleSheet("color: #d9534f;" if error else "")
+        self.statusLabel.setText(text)
+
+    def _save_service(self):
+        settings = read_settings()
+        settings[SUGGESTIONS_KEY] = {"provider": self._current, **self._fields()}  # the typed key, never the env one
+        write_settings(settings)
+
+    # --- asking --------------------------------------------------------------------------------------------------
+
+    def suggest(self):
+        if len(self.texts) < 2:
+            self._status("Add at least two groups first.", error=True)
+            return
+        provider = self.provider_settings()
+        try:
+            embeddings.endpoint_url(provider["baseUrl"])
+        except embeddings.EmbeddingError as error:
+            self._status(str(error), error=True)
+            return
+        if not provider["model"]:
+            self._status("Enter the name of an embedding model.", error=True)
+            return
+        if embeddings.sends_off_this_computer(provider["baseUrl"]):
+            preview = "\n".join(text for _, text in self.texts[:6]) + ("\n…" if len(self.texts) > 6 else "")
+            if not askUser(f"Send these {len(self.texts)} group descriptions to {embeddings.host_of(provider['baseUrl'])}?"
+                           f"\n\n{preview}", parent=self, title="Suggest Colors"):
+                return
+        self._save_service()
+        self.btnSuggest.setEnabled(False)
+        self._status("Asking the embedding service…")
+        texts, lightness = self.texts, suggestion_lightness()
+        QueryOp(parent=self, op=lambda _col: compute_color_suggestions(texts, provider, lightness),
+                success=self._on_suggested).failure(self._on_failed).with_progress(
+            "Asking the embedding service…").run_in_background()
+
+    def _on_failed(self, error):
+        if self._closed:
+            return
+        self.btnSuggest.setEnabled(True)
+        if isinstance(error, embeddings.EmbeddingError):
+            self._status(str(error), error=True)
+        else:  # a bug, not the user's doing: keep the details in the console
+            traceback.print_exception(type(error), error, error.__traceback__)
+            self._status(f"Unexpected error: {error!r}", error=True)
+
+    def _on_suggested(self, suggested):
+        if self._closed:
+            return
+        self.btnSuggest.setEnabled(True)
+        self.suggested = suggested
+        self.checks = {}
+        self.table.setRowCount(len(suggested))
+        for row, (name, color) in enumerate(suggested):
+            check = QCheckBox()
+            check.setChecked(True)
+            holder = QWidget()
+            holder_layout = QHBoxLayout(holder)
+            holder_layout.setContentsMargins(8, 0, 8, 0)
+            holder_layout.addWidget(check)
+            self.table.setCellWidget(row, 0, holder)
+            self.checks[name] = check
+            self.table.setItem(row, 1, QTableWidgetItem(name))
+            self.table.setItem(row, 2, _swatch_item(group_color(self.groups, name)))
+            self.table.setItem(row, 3, _swatch_item(color))
+        self.btnApply.setEnabled(True)
+        self._status(f"Colours for {len(suggested)} groups, in colour-wheel order: neighbours mean similar things. "
+                     "Untick a group to keep its current colour.")
+
+    def get_colors(self):
+        return {name: color for name, color in self.suggested if self.checks[name].isChecked()}
+
+    def done(self, result):
+        self._closed = True
+        super().done(result)
 
 
 class GroupManagerDialog(QDialog):
@@ -691,9 +915,15 @@ class GroupManagerDialog(QDialog):
 
         layout = QVBoxLayout()
 
+        top = QHBoxLayout()
         self.btnAddGroup = QPushButton("Add Group")
         self.btnAddGroup.clicked.connect(self.add_group)
-        layout.addWidget(self.btnAddGroup)
+        top.addWidget(self.btnAddGroup)
+        self.btnSuggest = QPushButton("Suggest Colors…")
+        self.btnSuggest.setToolTip("Give groups with a similar meaning similar colours")
+        self.btnSuggest.clicked.connect(self.suggest_colors)
+        top.addWidget(self.btnSuggest)
+        layout.addLayout(top)
 
         self.table = QTableWidget()
         self.table.setColumnCount(5)
@@ -769,6 +999,17 @@ class GroupManagerDialog(QDialog):
                     e["group"] = new_name
         self.groups[new_name] = {"color": color, "bold": bold}
         self.refresh()
+
+    def suggest_colors(self):
+        if len(self.groups) < 2:
+            QMessageBox.information(self, "Suggest Colors", "Add at least two groups first.")
+            return
+        dialog = SuggestColorsDialog(self.groups, self.entries, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        for name, color in dialog.get_colors().items():
+            self.groups[name] = {"color": color, "bold": group_bold(self.groups, name)}
+        self.refresh()  # like every edit here, kept only when this window is saved
 
     def delete_group(self, name):
         count = sum(1 for e in self.entries if e.get("group") == name)

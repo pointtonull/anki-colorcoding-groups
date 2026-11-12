@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sandbox  # noqa: E402
 
 EXPECTED = ["editor.png", "context-menu.png", "group-picker.png", "group-manager.png", "settings.png",
-            "settings-decks.png", "deck-menu.png"]
+            "settings-decks.png", "deck-menu.png", "suggest-colors.png"]
 
 
 def main():

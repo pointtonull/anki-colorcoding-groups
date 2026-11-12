@@ -103,7 +103,8 @@ def build_sandbox(base, driver_file, settings='{"autoColorAllFields": true}', ad
     driver = addons / "zz_driver"
     driver.mkdir()
     shutil.copy2(driver_file, driver / "driver.py")
-    shutil.copy2(REPO / "tools" / "driver_kit.py", driver / "driver_kit.py")
+    for helper in ("driver_kit.py", "fake_embeddings.py"):
+        shutil.copy2(REPO / "tools" / helper, driver / helper)
     # A driver that cannot even be imported would make Anki pop up an error dialog nobody sees; report it instead.
     (driver / "__init__.py").write_text(BOOTSTRAP)
 

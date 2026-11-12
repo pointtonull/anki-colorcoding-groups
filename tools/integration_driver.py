@@ -6,10 +6,11 @@ $COLORCODING_SHOTS_LOG as PASS/FAIL lines; every wait is bounded (see driver_kit
 """
 import importlib
 import os
+import threading
 import types
 
 from aqt import dialogs, mw
-from PyQt6.QtWidgets import QMenu
+from PyQt6.QtWidgets import QDialog, QMenu
 
 from . import driver_kit as kit
 
@@ -214,6 +215,158 @@ def scenario():
     yield spans
     places = [color for group, color, _weight in spans.value if group == "Places"]
     check("reviewer: the new colour shows without touching a note", bool(places) and set(places) == {"rgb(17, 34, 51)"}, spans.value)
+
+    # --- colour suggestions: the dialog, the OpenAI-compatible request, the privacy gate, failures --------------
+    kit.step("colour suggestions")
+    from . import fake_embeddings
+    fake = fake_embeddings.FakeEmbeddings()
+    base_url = fake.start()
+    groups = {name: {"color": "#cccccc", "bold": False} for name in ("Places", "Cities", "People", "Scientists", "Code")}
+    entries = [{"word": "Paris", "group": "Places"}, {"word": "London", "group": "Cities"},
+               {"word": "Ada", "group": "People"}, {"word": "Turing", "group": "Scientists"},
+               {"word": "async", "group": "Code"}]
+    cc.write_settings({"somethingElse": 1})
+    settings_path = os.path.join(cc.addon_folder, "user_files", "settings.json")
+
+    dialog = cc.SuggestColorsDialog(groups, entries)
+    dialog.show()
+    yield kit.wait(lambda: kit.exposed(dialog), "the Suggest Colors dialog to appear on screen")
+    check("suggest dialog: starts on OpenAI with its preset",
+          dialog.providerCombo.currentData() == "openai" and dialog.addressEdit.text() == "https://api.openai.com/v1"
+          and dialog.modelEdit.text() == "text-embedding-3-small", dialog.addressEdit.text())
+    check("suggest dialog: says what would leave the computer, and where to",
+          "5 group names" in dialog.privacyLabel.text() and "api.openai.com" in dialog.privacyLabel.text(),
+          dialog.privacyLabel.text())
+
+    dialog.providerCombo.setCurrentIndex(dialog.providerCombo.findData("ollama"))
+    check("suggest dialog: the Ollama preset is a local address and says so",
+          dialog.addressEdit.text() == "http://localhost:11434/v1" and "stays on this computer" in dialog.privacyLabel.text(),
+          (dialog.addressEdit.text(), dialog.privacyLabel.text()))
+    dialog.providerCombo.setCurrentIndex(dialog.providerCombo.findData("custom"))
+    dialog.addressEdit.setText(base_url)
+    dialog.modelEdit.setText("fake-model")
+    dialog.keyEdit.setText("sk-fake-123")
+    dialog.providerCombo.setCurrentIndex(dialog.providerCombo.findData("ollama"))
+    dialog.providerCombo.setCurrentIndex(dialog.providerCombo.findData("custom"))
+    check("suggest dialog: switching service back keeps what was typed for it",
+          (dialog.addressEdit.text(), dialog.modelEdit.text(), dialog.keyEdit.text()) == (base_url, "fake-model", "sk-fake-123"))
+
+    kit.step("suggest: a successful request")
+    dialog.suggest()
+    yield kit.wait(lambda: dialog.btnApply.isEnabled(), "the colour suggestions to arrive", 20000)
+    request = fake.requests[-1]
+    check("suggest: posts to /v1/embeddings with the model", request["path"] == "/v1/embeddings"
+          and request["body"]["model"] == "fake-model", request)
+    check("suggest: sends the key as a bearer token", request["authorization"] == "Bearer sk-fake-123")
+    check("suggest: sends each group's name and words, sorted by name",
+          request["body"]["input"] == ["Cities: London", "Code: async", "People: Ada", "Places: Paris", "Scientists: Turing"],
+          request["body"]["input"])
+    order = [name for name, _color in dialog.suggested]
+    adjacent = lambda a, b: (order.index(a) - order.index(b)) % 5 in (1, 4)  # noqa: E731
+    check("suggest: groups with a similar meaning end up next to each other on the wheel",
+          adjacent("Places", "Cities") and adjacent("People", "Scientists"), order)
+    check("suggest: every group gets its own valid colour",
+          len({color for _name, color in dialog.suggested}) == 5 and all(len(c) == 7 and c[0] == "#" for _n, c in dialog.suggested),
+          dialog.suggested)
+    check("suggest: the preview table lists them all, with the colours",
+          dialog.table.rowCount() == 5 and [dialog.table.item(r, 3).text() for r in range(5)] == [c for _n, c in dialog.suggested])
+    dialog.checks["Code"].setChecked(False)
+    check("suggest: an unticked group keeps its colour", "Code" not in dialog.get_colors() and len(dialog.get_colors()) == 4)
+    saved = cc.read_settings()
+    check("suggest: the service is remembered, other settings kept",
+          saved.get("colorSuggestions") == {"provider": "custom", "baseUrl": base_url, "model": "fake-model",
+                                            "apiKey": "sk-fake-123"} and saved.get("somethingElse") == 1, saved)
+    if os.name == "posix":
+        check("suggest: settings.json is readable by the user only (it may hold a key)",
+              os.stat(settings_path).st_mode & 0o777 == 0o600, oct(os.stat(settings_path).st_mode & 0o777))
+    again = cc.SuggestColorsDialog(groups, entries)
+    check("suggest dialog: reopens on the remembered service", (again.providerCombo.currentData(), again.addressEdit.text(),
+          again.modelEdit.text(), again.keyEdit.text()) == ("custom", base_url, "fake-model", "sk-fake-123"))
+    again.close()
+
+    kit.step("suggest: failures say what is wrong")
+    fake.mode = "unauthorized"
+    dialog.suggest()
+    yield kit.wait(lambda: dialog.btnSuggest.isEnabled(), "the rejected request to come back", 20000)
+    status = dialog.statusLabel.text()
+    check("suggest: a rejected key is explained and the key is not shown",
+          "HTTP 401" in status and "Incorrect API key" in status and "sk-fake-123" not in status, status)
+    fake.mode = "ok"
+
+    asked = []
+    cc.askUser = lambda text, *args, **kwargs: (asked.append(text), False)[1]  # declines: sends nothing
+    dialog.addressEdit.setText("https://api.example.com/v1")
+    sent_before, saved_before = len(fake.requests), cc.read_settings()
+    dialog.suggest()
+    check("privacy: a remote service is asked about first, naming the host and the words",
+          len(asked) == 1 and "api.example.com" in asked[0] and "Cities: London" in asked[0], asked)
+    check("privacy: declining sends nothing, starts nothing and saves nothing",
+          dialog.btnSuggest.isEnabled() and len(fake.requests) == sent_before and cc.read_settings() == saved_before)
+    dialog.addressEdit.setText(base_url)
+    asked.clear()
+    cc.askUser = lambda *args, **kwargs: True
+    sent_before = len(fake.requests)
+    dialog.suggest()
+    yield kit.wait(lambda: len(fake.requests) > sent_before and dialog.btnSuggest.isEnabled(), "the local request to finish", 20000)
+    check("privacy: a service on this computer is not asked about", asked == [])
+
+    fake.stop()
+    dialog.suggest()
+    yield kit.wait(lambda: dialog.btnSuggest.isEnabled(), "the unreachable service to be reported", 20000)
+    check("suggest: an unreachable service is reported", "Could not reach 127.0.0.1" in dialog.statusLabel.text(),
+          dialog.statusLabel.text())
+
+    kit.step("suggest: input problems are caught before any request")
+    dialog.addressEdit.setText("ftp://nope")
+    dialog.suggest()
+    check("suggest: an address that is not http(s) is refused", "not a web address" in dialog.statusLabel.text(), dialog.statusLabel.text())
+    dialog.addressEdit.setText(base_url)
+    dialog.modelEdit.setText("")
+    dialog.suggest()
+    check("suggest: a missing model is asked for", "name of an embedding model" in dialog.statusLabel.text(), dialog.statusLabel.text())
+    alone = cc.SuggestColorsDialog({"Only": {"color": "#cccccc", "bold": False}}, [])
+    alone.suggest()
+    check("suggest: one group is not enough", "at least two groups" in alone.statusLabel.text(), alone.statusLabel.text())
+    alone.close()
+    dialog.close()
+
+    kit.step("suggest: applying in the group manager")
+
+    class Accepting:  # stands in for the dialog: exec() "presses Apply" with these colours
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def get_colors(self):
+            return {"Places": "#123456"}
+
+    real_dialog = cc.SuggestColorsDialog
+    cc.SuggestColorsDialog = Accepting
+    manager = cc.GroupManagerDialog({"Places": {"color": "#000000", "bold": True}, "Code": {"color": "#111111", "bold": False}}, [])
+    manager.suggest_colors()
+    cc.SuggestColorsDialog = real_dialog
+    check("manager: applying changes only the chosen colours and keeps bold",
+          manager.groups == {"Places": {"color": "#123456", "bold": True}, "Code": {"color": "#111111", "bold": False}}, manager.groups)
+    check("manager: the table shows the new colour", manager.table.item(1, 1).text() == "#123456", manager.table.item(1, 1).text())
+    manager.close()
+
+    if os.environ.get("COLORCODING_CHECK_TLS"):  # opt-in: needs the internet (and sends nothing but a dummy word)
+        kit.step("TLS from Anki's own Python")
+        embeddings = importlib.import_module(addon + ".embeddings")
+        outcome = []
+
+        def probe():
+            try:
+                embeddings.request_embeddings(["x"], "https://api.openai.com/v1", "text-embedding-3-small", timeout=10)
+                outcome.append("answered without a key (unexpected)")
+            except embeddings.EmbeddingError as error:
+                outcome.append(str(error))
+
+        threading.Thread(target=probe, daemon=True).start()
+        yield kit.wait(lambda: outcome, "the TLS probe to finish", 20000)
+        check("TLS: api.openai.com is reached over https and answers 401 (no key)", "HTTP 401" in outcome[0], outcome[0])
 
 
 kit.start(scenario)

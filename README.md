@@ -46,11 +46,47 @@ re-colours; **G** opens the group picker.*
   (*Edit → Undo*) takes it back, and the matching *remove colors* entries strip the colouring again.
 - **Choose which decks colour automatically.** *Tools → 🎨 Color Coding 🌈 → Font Settings* turns on automatic colouring
   when a note opens in the editor and lets you limit it to some decks (and their subdecks).
+- **Suggested colours.** *Manage Groups… → Suggest Colors…* gives groups with a similar meaning similar colours, using
+  an embedding model from OpenAI, Ollama or any compatible service ([how](#suggested-colours)).
 - **Config migration:** the flat `[{"word", "group", "color"}]` list of the original and groups stored as bare
   colour strings are upgraded automatically.
 
 <img src="docs/screenshots/deck-menu.png" width="361" alt="The deck list's gear menu with two Color Coding entries">
 <img src="docs/screenshots/settings-decks.png" width="440" alt="Settings: automatic colouring, limited to the highlighted decks">
+
+## Suggested colours
+
+Choosing a colour per group by hand gets harder the more groups you have, and unrelated colours say nothing about how
+the groups relate. *Manage Groups… → Suggest Colors…* picks them for you so that **groups with a similar meaning get
+similar colours**: Cities, Countries and Rivers land in neighbouring blues, Drugs and Diseases in neighbouring greens.
+
+<img src="docs/screenshots/suggest-colors.png" width="560" alt="The Suggest Colors dialog: the service settings, and a table of groups in colour-wheel order with their current and suggested colours">
+
+You see the result before anything changes: untick a group to keep its colour, press *Apply*, and the colours are
+saved with the rest of the group manager (Cancel there throws them away).
+
+**How it works.** Each group's name and a few of its words (`Cities: London, Lisbon`) are turned into an embedding, a
+list of numbers that places the text by meaning. The add-on then finds the shortest closed tour through the groups
+(a travelling-salesman route, exact up to 12 groups), so that groups that are close in meaning are neighbours, and
+walks it around the colour wheel with a hue step **proportional to the distance to the next group**, the step from the
+last group back to the first included. Steps never go below 16°, so two near-duplicate groups stay distinguishable. With
+more groups than that fits (about 22), neighbours alternate between a lighter and a darker shade as well. Colours are
+picked in OKLCH at a fixed lightness for your current theme (so they read equally well on a dark or a light
+background); re-run it after switching theme.
+
+**Which service.** Anything that speaks the OpenAI `/v1/embeddings` API:
+
+| Service | Setup |
+|---|---|
+| **OpenAI** | Paste an API key (or leave the field empty and start Anki with `OPENAI_API_KEY` set). Model `text-embedding-3-small`. A few hundred tokens per run. |
+| **Ollama** (local) | `ollama pull nomic-embed-text`, keep Ollama running, pick *Ollama (local)*. Nothing leaves your computer. |
+| **Other** | LM Studio, llama.cpp, vLLM, a gateway...: its `/v1` address, a model name and, if it wants one, a key. |
+
+**What is sent, and when.** Only when you press *Suggest*, and only to the address shown in the dialog: the group names
+and up to 8 of each group's words. For a service that is not on your own computer the add-on first shows what it is
+about to send and asks. Your notes are never sent. The service and the key are remembered in
+`user_files/settings.json` (plain text, readable by your user only, never committed); an API key is never sent over
+plain `http` to a remote host.
 
 ## How the colours are stored
 
@@ -104,9 +140,13 @@ longer exists, are not coloured.
 ## Development
 
 - Unit tests (no Anki needed): `python3 -m unittest discover -s tests`. The word matching, stylesheet and `@import`
-  handling live in `colorize.py`, which imports nothing from Anki.
+  handling live in `colorize.py`; the colour suggestion maths (travelling-salesman tour, proportional hues, OKLCH) in
+  `palette.py`; the OpenAI-compatible client in `embeddings.py` (tested against a real HTTP server on localhost). None
+  of them imports anything from Anki.
 - Checks in a real Anki: `python3 tools/check_in_anki.py` runs the add-on in a throwaway profile (editor, bulk colouring
-  and undo, deck scope, what the reviewer renders). `--addon-folder 267803161` repeats it the way AnkiWeb installs it.
+  and undo, deck scope, what the reviewer renders, the colour suggestion dialog against a fake embeddings server).
+  `--addon-folder 267803161` repeats it the way AnkiWeb installs it. `COLORCODING_CHECK_TLS=1` also checks that Anki's
+  own Python can reach `api.openai.com` over https (it sends nothing but a dummy word, without a key).
 - Screenshots: `python3 tools/make_screenshots.py`. `python3 tools/check_harness.py` proves the two above fail fast
   and clean (with a message and snapshots, no leftover processes) instead of hanging when Anki misbehaves.
 
@@ -116,7 +156,7 @@ This add-on started from **ColorCoding** by **Marc Schubert** (© 2022–2024), 
 [AnkiWeb](https://ankiweb.net/shared/info/2113325087) and [GitHub](https://github.com/schubertmc/ColorCoding),
 and still contains parts of his code (notably in `changer_static.js` and the settings window). The original
 project does **not publish a licence**, so those parts remain his; his copyright lines are kept in the source
-files. Everything added here (groups, group manager and picker, context menu, all-fields colouring, config migration)
-is under the [MIT licence](LICENSE).
+files. Everything added here (groups, group manager and picker, context menu, all-fields colouring, config migration,
+the shared stylesheet, deck-wise colouring, colour suggestions) is under the [MIT licence](LICENSE).
 
 If you are the original author and would like something changed or removed, please open an issue.
