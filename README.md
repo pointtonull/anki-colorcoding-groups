@@ -147,6 +147,9 @@ longer exists, are not coloured.
   and undo, deck scope, what the reviewer renders, the colour suggestion dialog against a fake embeddings server).
   `--addon-folder 267803161` repeats it the way AnkiWeb installs it. `COLORCODING_CHECK_TLS=1` also checks that Anki's
   own Python can reach `api.openai.com` over https (it sends nothing but a dummy word, without a key).
+- Releasing (maintainer): `DESCRIPTION.md` is the AnkiWeb listing's text; `python3 tools/release_ankiweb.py` checks, packages
+  and publishes the committed tree plus that text, then verifies what AnkiWeb serves (`--dry-run`, `--check`; needs Firefox with
+  the FoxMCP extension).
 - Screenshots: `python3 tools/make_screenshots.py`. `python3 tools/check_harness.py` proves the two above fail fast
   and clean (with a message and snapshots, no leftover processes) instead of hanging when Anki misbehaves.
 

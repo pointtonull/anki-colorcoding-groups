@@ -29,13 +29,16 @@ from Marc Schubert's AnkiWeb "ColorCoding" (no upstream licence — see `NOTICE`
 - `tools/` — the throwaway-Anki harness: `sandbox.py` (launcher), `driver_kit.py` (waits, watchdogs; runs inside Anki),
   `make_screenshots.py` + `screenshot_driver.py`, `check_in_anki.py` + `integration_driver.py`, `fake_embeddings.py` (a
   fake OpenAI-compatible server the drivers run in-process: no key, no network), `check_harness.py` (proves the harness
-  fails fast and clean). `docs/`, `tools/`, `tests/` and this file are `export-ignore`d: the AnkiWeb package is
+  fails fast and clean), `release_ankiweb.py` (the release script, see *Releasing to AnkiWeb*; unit-tested in
+  `tests/test_release_ankiweb.py` against a fake FoxMCP). `DESCRIPTION.md` is the listing's description.
+  `docs/`, `tools/`, `tests/`, `DESCRIPTION.md` and this file are `export-ignore`d: the AnkiWeb package is
   `__init__.py`, `colorize.py`, `palette.py`, `embeddings.py`, `changer_static.js`, `manifest.json`, icon, README,
   LICENSE, NOTICE, `user_files/`.
 
 ## Testing
 
-Before any release, run all three; none needs you to touch anything, and each ends in a clear verdict:
+Before any release (`tools/release_ankiweb.py` runs 1 and 2 for you), run all three; none needs you to touch anything, and
+each ends in a clear verdict:
 1. `python3 -m unittest discover -s tests` (instant).
 2. `python3 tools/check_in_anki.py` and again with `--addon-folder 267803161` (AnkiWeb installs use the number, which
    matters for relative imports). ~1 min each; windows of a second Anki flash up.
@@ -60,18 +63,29 @@ Harness rules learnt the hard way — keep them:
 
 ## Releasing to AnkiWeb
 
-Listed at https://ankiweb.net/shared/info/267803161 (code `267803161`, Carlos's AnkiWeb account). To ship a new version:
-1. Commit and push, then build from the committed tree: `git archive --format=zip -o <scratchpad>/colorcoding-groups.ankiaddon HEAD`
-   (`.gitattributes` keeps CLAUDE.md etc. out; the zip must have files at its root and no `__pycache__`/`meta.json`).
-2. Open https://ankiweb.net/shared/upload?id=267803161 in Carlos's Firefox via FoxMCP (background tab; `profile_id` 1),
-   replace the branch file (`content_load_file` + assign to the file input), keep the version range (23.10 → 26.05, no `-`
-   cap) and press *Save*. Confirm with Carlos before saving: it changes a public listing.
-3. The form's text inputs take plain `el.value = …` plus an `input` event; version fields get normalised to `x.y.0`.
-4. AnkiWeb hosts no images: the listing's description (Markdown + basic HTML, `<img width=…>` works) points at the
-   screenshots on GitHub (`https://raw.githubusercontent.com/pointtonull/anki-colorcoding-groups/main/docs/screenshots/<name>.png`),
-   so push a screenshot change to `main` before (re)saving the description.
-5. To verify what AnkiWeb really serves, run a numeric-folder sandbox *without* `update_enabled: false`: Anki downloads
-   the published package and you can hash it against the commit (this confirmed 1641976 byte for byte).
+Listed at https://ankiweb.net/shared/info/267803161 (code `267803161`, Carlos's AnkiWeb account). One script does it:
+`python3 tools/release_ankiweb.py` (see its `--help`). It needs Firefox open with the FoxMCP extension, and re-runs itself on
+FoxMCP's venv Python.
+1. Edit **`DESCRIPTION.md`** (repo root, export-ignored) when the listing text should change: it is the source of truth for
+   the AnkiWeb description (Markdown + basic HTML). `python3 tools/release_ankiweb.py --pull-description` adopts edits made
+   on the website. The listing hosts no images: it points at the screenshots on GitHub
+   (`https://raw.githubusercontent.com/pointtonull/anki-colorcoding-groups/main/docs/screenshots/<name>.png`), so a new
+   screenshot must be on `main` first (the script checks every image answers 200).
+2. Commit and push (the script refuses a dirty tree, another branch or an unpushed HEAD).
+3. `python3 tools/release_ankiweb.py --dry-run` rehearses everything except *Save*; `--check` only reports whether AnkiWeb
+   matches HEAD and `DESCRIPTION.md`.
+4. `python3 tools/release_ankiweb.py` releases: unit tests, syntax and both in-Anki checks, then the package
+   (`git archive HEAD`, inspected: no personal files, every imported module inside), then the form, a summary of what
+   changes against the live listing, and a prompt. **Confirm with Carlos before pressing `y` or passing `--yes`: it changes
+   a public listing.** A non-interactive run (how Claude runs it) needs `--yes` and exits 3 without it. Afterwards it
+   verifies that AnkiWeb serves the same files as HEAD, that the description reads back equal and that the images render.
+   `--skip-checks` is for a description-only fix; `--force` publishes when nothing differs.
+5. What it learnt, in case AnkiWeb or FoxMCP change under it: the form's text inputs take plain `el.value = …` plus an
+   `input` event; version fields are normalised to `x.y.0` and left as they are (23.10 → 26.05, no `-` cap); the download URL
+   `https://ankiweb.net/shared/download/267803161?v=2.1&p=<build>` needs an integer build number (`260500` for 26.05.0) and no
+   login; the `content_execute_script` sandbox rejects `Array.prototype.find.call(NodeList, fn)` (use `for` loops); a
+   package is attached with `content_load_file` + `DataTransfer`. Every publish uploads the package, even for a
+   description-only change.
 
 ## Ground rules
 
