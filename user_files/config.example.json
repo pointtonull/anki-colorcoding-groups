@@ -1,0 +1,16 @@
+{
+    "groups": {
+        "Places": {"color": "#798aff", "bold": false},
+        "People": {"color": "#ff44a1", "bold": true},
+        "Dates": {"color": "#ffcb76", "bold": false},
+        "Code": {"color": "#3ad459", "bold": false}
+    },
+    "entries": [
+        {"word": "Paris", "group": "Places"},
+        {"word": "Kyoto", "group": "Places"},
+        {"word": "Ada Lovelace", "group": "People"},
+        {"word": "Alan Turing", "group": "People"},
+        {"word": "1969", "group": "Dates"},
+        {"word": "async", "group": "Code"}
+    ]
+}

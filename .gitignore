@@ -1,0 +1,9 @@
+# Personal data written by the add-on at runtime
+user_files/config.json
+user_files/settings.json
+
+__pycache__/
+*.pyc
+.DS_Store
+.claude/
+*.ankiaddon

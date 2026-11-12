@@ -1,0 +1,15 @@
+Color Coding Groups
+===================
+
+Based on ColorCoding, an Anki add-on by Marc Schubert.
+  Copyright 2022-2024 Marc Schubert <schubert.mc.ai@gmail.com>
+  https://ankiweb.net/shared/info/2113325087
+  https://github.com/schubertmc/ColorCoding
+
+The original project does not state a licence. Code derived from it (parts of __init__.py
+and most of changer_static.js) remains the property of its author and keeps his copyright
+line in the file header. It is included here with attribution; if the author asks for it to
+be removed or replaced, it will be.
+
+The editor-button icon (icon3232.png) was created for this project and is not taken from
+the original.
