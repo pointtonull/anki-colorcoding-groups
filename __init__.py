@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (QApplication, QWidget, QPushButton, QMainWindow, QT
                              QTableWidget, QTableWidgetItem, QVBoxLayout, QHBoxLayout,
                              QInputDialog, QColorDialog, QDialog, QLabel, QLineEdit, 
                              QMessageBox, QComboBox, QAbstractItemView)
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QKeySequence
 from PyQt6.QtCore import Qt, pyqtSignal
 
 addon_folder = os.path.dirname(__file__)
@@ -63,13 +63,18 @@ def _normalize_config(data):
 
 def read_config():
     filepath = os.path.join(addon_folder, "user_files", "config.json")
-    with open(filepath) as file:
-        data = json.load(file)
+    try:
+        with open(filepath) as file:
+            data = json.load(file)
+    except FileNotFoundError:
+        # Fresh install: no words yet. config.json is created by the first save.
+        data = {}
     return _normalize_config(data)
 
 
 def write_config(config):
     filepath = os.path.join(addon_folder, "user_files", "config.json")
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
     with open(filepath, "w") as file:
         file.write(json.dumps(_normalize_config(config)))
     return 0
@@ -89,6 +94,7 @@ def group_bold(groups, name):
 
 def write_settings(settings):
     filepath = os.path.join(addon_folder,"user_files", "settings.json")
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
     with open(filepath, "w") as file:
         json.dump(settings, file)
 
@@ -507,7 +513,8 @@ class SettingsDialog(QDialog):
 
     @staticmethod
     def write_settings(settings):
-        filepath = os.path.join(addon_folder,"user_files" ,"settings.json")  
+        filepath = os.path.join(addon_folder,"user_files" ,"settings.json")
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
         with open(filepath, "w") as file:
             json.dump(settings, file)
 
@@ -813,29 +820,41 @@ def complex_settings_gui():
 
 
 # Setup buttons
+
+# On macOS Qt maps "Ctrl" to ⌘; "Meta" maps to the physical Control key, so these
+# are Control+Shift+H / Control+Shift+G there (Meta = Windows key elsewhere).
+COLOR_ALL_KEYS = "Meta+Shift+H"
+SET_GROUP_KEYS = "Meta+Shift+G"
+
+
+def _tip_with_shortcut(tip, keys):
+    """Tooltip text followed by the shortcut in the platform's own notation
+    (⌃⇧H on macOS, Meta+Shift+H elsewhere). Anki registers `keys` for the button
+    but never adds them to its tooltip, so we spell them out."""
+    native = QKeySequence(keys).toString(QKeySequence.SequenceFormat.NativeText)
+    return f"{tip} ({native})"
+
+
 def setupButtons(buttons, editor):
     icon_path = os.path.join(addon_folder,"icon3232.png")
     btn = editor.addButton(icon_path,
                            "foo",
                            performConversion,
-                           tip= "Color words in all fields",
+                           tip=_tip_with_shortcut("Color words in all fields", COLOR_ALL_KEYS),
                            label = "C",
-                           # On macOS Qt maps "Ctrl" to ⌘; "Meta" maps to the
-                           # physical Control key — so this is Control+Shift+H.
-                           keys = "Meta+Shift+H",
+                           keys = COLOR_ALL_KEYS,
                            rightside=True,
                            )
     buttons.append(btn)
 
     # Keyboard-driven "set color group" for the current selection. Text-only
-    # ("G") button; its real point is the shortcut. As above, "Meta" is the
-    # physical Control key on macOS, so this is Control+Shift+G.
+    # ("G") button; its real point is the shortcut.
     btn_group = editor.addButton(None,
                                  "colorcoding_setgroup",
                                  open_group_picker,
-                                 tip="Set color group for selection",
+                                 tip=_tip_with_shortcut("Set color group for selection", SET_GROUP_KEYS),
                                  label="G",
-                                 keys="Meta+Shift+G",
+                                 keys=SET_GROUP_KEYS,
                                  rightside=True,
                                  )
     buttons.append(btn_group)
