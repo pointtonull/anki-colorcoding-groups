@@ -1,13 +1,17 @@
 # 2022-2024 Marc Schubert <schubert.mc.ai@gmail.com>
 
 from anki import hooks
+from anki.collection import OpChanges, SearchNode
 from aqt import mw
+from aqt.operations import CollectionOp
 from aqt.qt import *
 from aqt import gui_hooks
-from aqt.utils import tooltip
+from aqt.utils import askUser, tooltip
 import os
 import json
 import sys
+
+from . import colorize
 
 from PyQt6.QtWidgets import (QApplication, QWidget, QPushButton, QMainWindow, QTextEdit,
                              QTableWidget, QTableWidgetItem, QVBoxLayout, QHBoxLayout,
@@ -75,8 +79,13 @@ def read_config():
 def write_config(config):
     filepath = os.path.join(addon_folder, "user_files", "config.json")
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    config = _normalize_config(config)
     with open(filepath, "w") as file:
-        file.write(json.dumps(_normalize_config(config)))
+        file.write(json.dumps(config))
+    try:
+        sync_stylesheet(config["groups"])  # new colours reach every note through the shared stylesheet
+    except Exception as error:  # never lose a save over the stylesheet; it is rewritten at the next start
+        print("Color Coding Groups: could not update the stylesheet:", error)
     return 0
 
 
@@ -139,6 +148,122 @@ def assign_word_to_group(word, group, color=None, bold=None):
     if not found:
         config["entries"].append({"word": word, "group": group})
     write_config(config)
+
+
+# --- The shared stylesheet -------------------------------------------------------------------------------------
+#
+# A coloured word is stored as <span class="ColorCoding" data-name="…" data-group="…">…</span> with no colour of its
+# own. The colours come from one stylesheet in the collection's media folder that each note type @imports (see
+# colorize.py). Anki syncs it with the media, so changing a group's colour recolours every note on every device.
+
+def sync_stylesheet(groups=None):
+    """Make the collection's stylesheet match the groups. True if the file changed. Does nothing while no
+    collection is open."""
+    if mw is None or mw.col is None:
+        return False
+    css = colorize.build_css(get_groups() if groups is None else groups)
+    path = os.path.join(mw.col.media.dir(), colorize.CSS_FILENAME)
+    try:
+        with open(path, encoding="utf-8") as file:
+            if file.read() == css:
+                return False  # leave an unchanged file alone, or media sync would re-upload it
+    except FileNotFoundError:
+        pass
+    with open(path, "w", encoding="utf-8") as file:
+        file.write(css)
+    return True
+
+
+def ensure_stylesheet_import(col, notetype_ids):
+    """Add the @import of the stylesheet to these note types' CSS where it is missing; returns how many were
+    changed. Only the styling changes, so Anki does not ask for a full sync."""
+    changed = 0
+    for notetype_id in set(notetype_ids):
+        notetype = col.models.get(notetype_id)
+        if notetype is None or colorize.has_import(notetype.get("css", "")):
+            continue
+        notetype["css"] = colorize.add_import(notetype.get("css", ""))
+        col.models.update_dict(notetype)
+        changed += 1
+    return changed
+
+
+# --- Colouring many notes at once --------------------------------------------------------------------------------
+
+def run_bulk(parent, note_ids, remove, what):
+    """Colour the words in `note_ids` (or, with remove=True, take the colouring out), as one undoable step."""
+    note_ids = list(note_ids)
+    if not note_ids:
+        tooltip("There are no notes to change.", parent=parent)
+        return
+    action = "Remove the colouring from" if remove else "Color the words in"
+    if not askUser(f"{action} {len(note_ids):,} notes in {what}?\n\n"
+                   "Only notes that change are edited, and Edit → Undo reverts the whole run.",
+                   parent=parent, title="🎨 Color Coding"):
+        return
+    config = read_config()
+    outcome = {"changed": 0}
+
+    def operation(col):
+        matcher = colorize.make_matcher(config)
+        convert = colorize.strip_html if remove else (lambda text: colorize.colorize_html(text, matcher))
+        changed, with_spans = [], set()
+        for note_id in note_ids:
+            note = col.get_note(note_id)
+            fields = [convert(field) for field in note.fields]
+            if not remove and any(f'class="{colorize.SPAN_CLASS}"' in field for field in fields):
+                with_spans.add(note.mid)
+            if fields != note.fields:
+                note.fields = fields
+                changed.append(note)
+        outcome["changed"] = len(changed)
+        needs_import = [mid for mid in with_spans if not colorize.has_import(col.models.get(mid).get("css", ""))]
+        if not changed and not needs_import:
+            return OpChanges()
+        step = col.add_custom_undo_entry("Color Coding")
+        ensure_stylesheet_import(col, needs_import)
+        if changed:
+            col.update_notes(changed)
+        return col.merge_undo_entries(step)  # the note type edit and the note updates become one undo step
+
+    def done(_changes):
+        sync_stylesheet()
+        tooltip(f"{'Uncolored' if remove else 'Colored'} {outcome['changed']:,} of {len(note_ids):,} notes.",
+                parent=parent)
+
+    CollectionOp(parent, operation).success(done).run_in_background()
+
+
+def bulk_for_deck(deck_id, remove):
+    col = mw.col
+    name = col.decks.name(deck_id)
+    note_ids = col.find_notes(col.build_search_string(SearchNode(deck=name)))
+    run_bulk(mw, note_ids, remove, f"the deck “{name}” and its subdecks")
+
+
+def on_deck_options_menu(menu, deck_id):
+    menu.addSeparator()
+    for text, remove in (("🎨 Color Coding: color this deck's notes", False),
+                         ("🎨 Color Coding: remove colors from this deck's notes", True)):
+        action = menu.addAction(text)
+        qconnect(action.triggered, lambda _checked=False, d=deck_id, r=remove: bulk_for_deck(d, r))
+
+
+def on_browser_menus(browser):
+    menu = browser.form.menu_Notes
+    menu.addSeparator()
+    for text, remove in (("🎨 Color Coding: color the words in selected notes", False),
+                         ("🎨 Color Coding: remove colors from selected notes", True)):
+        action = menu.addAction(text)
+        qconnect(action.triggered,
+                 lambda _checked=False, b=browser, r=remove: run_bulk(b, b.selected_notes(), r, "the selection"))
+
+
+def _on_profile_open():
+    try:
+        sync_stylesheet()
+    except Exception as error:
+        print("Color Coding Groups: could not write the stylesheet:", error)
 
 class ManualEditing(QMainWindow):
     data_saved = pyqtSignal()
@@ -482,22 +607,39 @@ class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle('Settings')
-        self.setFixedSize(360, 110)
+        self.resize(420, 460)
 
         settings = self.read_settings()
 
         layout = QVBoxLayout()
 
         # Bold is configured per group now (see "Manage Groups…").
-        self.autoColorCheckBox = QCheckBox("Automatically color all fields when a card opens")
+        self.autoColorCheckBox = QCheckBox("Automatically color all fields when a note opens in the editor")
         self.autoColorCheckBox.setChecked(settings.get('autoColorAllFields', False))
         layout.addWidget(self.autoColorCheckBox)
 
+        layout.addWidget(QLabel("…only for notes in the highlighted decks (and their subdecks).\n"
+                                "Click a deck to highlight or clear it; none highlighted = every deck."))
+        self.deckList = QListWidget()
+        self.deckList.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        chosen = {name.lower() for name in settings.get('autoColorDecks', [])}
+        for name in sorted((deck.name for deck in mw.col.decks.all_names_and_ids(include_filtered=False)),
+                           key=str.lower):
+            item = QListWidgetItem(name)
+            self.deckList.addItem(item)
+            item.setSelected(name.lower() in chosen)
+        self.deckList.setEnabled(self.autoColorCheckBox.isChecked())
+        self.autoColorCheckBox.toggled.connect(self.deckList.setEnabled)
+        layout.addWidget(self.deckList)
+
+        buttons = QHBoxLayout()
         self.btnSave = QPushButton("Save")
         self.btnSave.clicked.connect(self.save_settings)
         self.btnCancel = QPushButton("Cancel")
         self.btnCancel.clicked.connect(self.cancel_settings)
-        layout.addWidget(self.btnSave)
+        buttons.addWidget(self.btnSave)
+        buttons.addWidget(self.btnCancel)
+        layout.addLayout(buttons)
 
         self.setLayout(layout)
 
@@ -505,10 +647,14 @@ class SettingsDialog(QDialog):
         print("Changes canceled!")
         self.close()
 
+    def chosen_decks(self):
+        return [item.text() for item in self.deckList.selectedItems()]
+
     def save_settings(self):
-        self.write_settings({
-            'autoColorAllFields': self.autoColorCheckBox.isChecked(),
-        })
+        settings = self.read_settings()  # keep any other keys
+        settings['autoColorAllFields'] = self.autoColorCheckBox.isChecked()
+        settings['autoColorDecks'] = self.chosen_decks()
+        self.write_settings(settings)
         self.accept()
 
     @staticmethod
@@ -861,23 +1007,27 @@ def setupButtons(buttons, editor):
 
 
 # Launch engine
-def _resolve_colored_entries():
-    """Flatten the config into [{word, group, color, bold}, ...] for the JS,
-    resolving each entry's colour and bold from its group. Ungrouped entries (or
-    entries whose group no longer exists) are skipped — they stay uncolored."""
-    config = read_config()
+def _resolve_colored_entries(config):
+    """Flatten the config into [{word, group}, ...] for the JS. Ungrouped entries (or entries whose group no
+    longer exists or has no colour) are skipped: they stay uncolored."""
     groups = config["groups"]
-    data = []
-    for entry in config["entries"]:
-        group = entry.get("group", "")
-        color = group_color(groups, group)
-        if not color:
-            continue
-        data.append({"word": entry.get("word", ""),
-                     "group": group,
-                     "color": color,
-                     "bold": group_bold(groups, group)})
-    return data
+    return [{"word": entry.get("word", ""), "group": entry.get("group", "")}
+            for entry in config["entries"]
+            if group_color(groups, entry.get("group", ""))]
+
+
+_notetypes_with_import = set()  # note types already checked this session
+
+
+def _ensure_import_for_editor(editor):
+    note = editor.note
+    if note is None or note.mid in _notetypes_with_import:
+        return
+    try:
+        ensure_stylesheet_import(mw.col, [note.mid])
+        _notetypes_with_import.add(note.mid)
+    except Exception as error:  # colouring still works in the editor; only reviewing needs the import
+        print("Color Coding Groups: could not add the stylesheet to the note type:", error)
 
 
 def _run_colorizer(editor, init_call):
@@ -886,8 +1036,10 @@ def _run_colorizer(editor, init_call):
     with open(js_path, "r", encoding="utf-8") as js_file:
         js = js_file.read()
     webview.eval(js)
-    data = _resolve_colored_entries()
-    webview.eval(f"{init_call}({json.dumps(data)})")
+    config = read_config()
+    _ensure_import_for_editor(editor)
+    webview.eval(f"{init_call}({json.dumps(_resolve_colored_entries(config))}, "
+                 f"{json.dumps(colorize.build_css(config['groups']))})")
 
 
 def performConversion(editor):
@@ -897,10 +1049,28 @@ def performConversion(editor):
     _run_colorizer(editor, "initializeAllFields")
 
 
+def _editor_deck_name(editor):
+    """Name of the deck the editor's note belongs to (for a new note: the deck picked in the Add window)."""
+    card = getattr(editor, "card", None)
+    if card is None and editor.note is not None and editor.note.id:
+        cards = editor.note.cards()
+        card = cards[0] if cards else None
+    if card is not None:
+        deck_id = card.odid or card.did  # odid: the home deck of a card sitting in a filtered deck
+    else:
+        chooser = getattr(editor.parentWindow, "deck_chooser", None)
+        deck_id = chooser.selected_deck_id if chooser else None
+    return mw.col.decks.name_if_exists(deck_id) if deck_id else None
+
+
 def colorize_all_fields(editor):
     # On note load: colorize every field, without moving the caret.
-    # Off by default — enable in Font Settings ("Automatically color all fields").
-    if not read_settings().get("autoColorAllFields", False):
+    # Off by default — enable in Font Settings ("Automatically color all fields"), optionally only for some decks.
+    settings = read_settings()
+    if not settings.get("autoColorAllFields", False):
+        return
+    scope = settings.get("autoColorDecks", [])
+    if scope and not colorize.deck_in_scope(_editor_deck_name(editor), scope):
         return
     _run_colorizer(editor, "initializeAllFields")
 
@@ -1064,4 +1234,7 @@ gui_hooks.editor_did_init_buttons.append(setupButtons)
 gui_hooks.editor_did_init.append(add_to_editors)
 gui_hooks.editor_will_show_context_menu.append(on_editor_context_menu)
 gui_hooks.editor_did_load_note.append(colorize_all_fields)
+gui_hooks.profile_did_open.append(_on_profile_open)
+gui_hooks.deck_browser_will_show_options_menu.append(on_deck_options_menu)
+gui_hooks.browser_menus_did_init.append(on_browser_menus)
 

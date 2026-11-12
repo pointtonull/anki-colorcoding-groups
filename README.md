@@ -39,11 +39,38 @@ re-colours; **G** opens the group picker.*
   `Meta+Shift+G` (the physical **Control** key on macOS) for a keyboard-first group picker.
 - **Colours every field** of the note, not just the one with the cursor, and re-colours when a note is loaded.
   The **C** button (`Meta+Shift+H`) forces a re-colour.
+- **Change a group's colour once and every note follows**, with nothing to re-open or re-colour: the colours live
+  in one stylesheet, not in the notes ([how](#how-the-colours-are-stored)).
+- **Colour a whole deck at once.** Deck list → gear → *🎨 Color Coding: color this deck's notes* (subdecks included), or
+  select notes in the Browser → *Notes → 🎨 Color Coding: color the words in selected notes*. One undo step
+  (*Edit → Undo*) takes it back, and the matching *remove colors* entries strip the colouring again.
+- **Choose which decks colour automatically.** *Tools → 🎨 Color Coding 🌈 → Font Settings* turns on automatic colouring
+  when a note opens in the editor and lets you limit it to some decks (and their subdecks).
 - **Config migration:** the flat `[{"word", "group", "color"}]` list of the original and groups stored as bare
   colour strings are upgraded automatically.
 
-Coloured text is written as `<span class="ColorCoding" data-name="…" data-group="…" style="color:…">`, the same
-markup as the original, so notes coloured by either version keep working.
+<img src="docs/screenshots/deck-menu.png" width="361" alt="The deck list's gear menu with two Color Coding entries">
+<img src="docs/screenshots/settings-decks.png" width="440" alt="Settings: automatic colouring, limited to the highlighted decks">
+
+## How the colours are stored
+
+A coloured word is stored as `<span class="ColorCoding" data-name="Paris" data-group="Places">Paris</span>`: the
+group, not a colour. The colours come from one stylesheet, `_colorcoding_groups.css`, kept in your collection's media
+folder (so it syncs with it) and rewritten whenever you save a group. Each note type pulls it in with a single
+`@import url("_colorcoding_groups.css");` line at the top of its *Styling*, which the add-on adds the first time
+it colours a note of that type. Only the styling changes, so Anki does not ask for a full sync.
+
+- A colour change shows on the next card you review (the desktop caches a stylesheet for ten seconds); on AnkiDroid
+  and AnkiMobile after the next sync.
+- Notes coloured by an earlier version (or by the original ColorCoding) carry `style="color:…"` inside each span. That
+  keeps winning over the stylesheet until the note is coloured again: run *color this deck's notes* once per deck, or
+  open the note with automatic colouring on. Both replace the old spans.
+- Uninstalling leaves the `@import` line behind. It is harmless (a missing stylesheet is ignored); delete the first
+  line of a note type's *Styling* to tidy up. Spans left in notes show as plain text.
+- The add-on also puts the same rules into the editor itself, so coloured words show there too.
+
+The same markup (`class="ColorCoding"`, `data-group`) is what the original add-on wrote, so notes coloured by either
+version keep working.
 
 ## Install
 
@@ -73,6 +100,15 @@ Words and groups live in `user_files/config.json` inside the add-on folder (crea
 
 *Tools → Color Coding → Modify Manually* edits this JSON in a text box. Entries without a group, or whose group no
 longer exists, are not coloured.
+
+## Development
+
+- Unit tests (no Anki needed): `python3 -m unittest discover -s tests`. The word matching, stylesheet and `@import`
+  handling live in `colorize.py`, which imports nothing from Anki.
+- Checks in a real Anki: `python3 tools/check_in_anki.py` runs the add-on in a throwaway profile (editor, bulk colouring
+  and undo, deck scope, what the reviewer renders). `--addon-folder 267803161` repeats it the way AnkiWeb installs it.
+- Screenshots: `python3 tools/make_screenshots.py`. `python3 tools/check_harness.py` proves the two above fail fast
+  and clean (with a message and snapshots, no leftover processes) instead of hanging when Anki misbehaves.
 
 ## Credits and licence
 

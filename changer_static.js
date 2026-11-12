@@ -4,9 +4,10 @@
 console.log("Starting static changer");
 var word_data;
 
-function initializeWithData(data) {
+function initializeWithData(data, css) {
     word_data = data;
     let wordMap = new Map(word_data.map(item => [item.word.toLowerCase(), item]));
+    installStyle(editableElement.shadowRoot, css || '');
     colorizeWords(editableElement.shadowRoot.querySelector('anki-editable'), wordMap);
     placeCaretAtEnd(editableElement.shadowRoot.querySelector('anki-editable'));
 }
@@ -24,9 +25,24 @@ function getAllEditables() {
     return editables;
 }
 
+// The spans carry only their group (class + data-group); the colours come from a stylesheet. Reviewing uses the
+// one in the collection's media folder (imported by the note type), but the editor does not apply the note
+// type's CSS to field contents, so the same rules are injected into each field's shadow root here.
+function installStyle(root, css) {
+    let style = root.querySelector('style#colorcoding-groups');
+    if (!style) {
+        style = document.createElement('style');
+        style.id = 'colorcoding-groups';
+        root.appendChild(style);
+    }
+    if (style.textContent !== css) {
+        style.textContent = css;
+    }
+}
+
 // Colorize every field at once, without touching the caret. Used on note load.
 // Fields render asynchronously, so retry briefly until they appear.
-function initializeAllFields(data) {
+function initializeAllFields(data, css) {
     word_data = data;
     let wordMap = new Map(word_data.map(item => [item.word.toLowerCase(), item]));
 
@@ -38,7 +54,10 @@ function initializeAllFields(data) {
             setTimeout(run, 100);
             return;
         }
-        editables.forEach(ed => colorizeWords(ed, wordMap));
+        editables.forEach(ed => {
+            installStyle(ed.getRootNode(), css || '');
+            colorizeWords(ed, wordMap);
+        });
     }
     run();
 }
@@ -137,8 +156,6 @@ function colorizeWords(editableElement, wordMap) {
 
             const matched_item = wordMap.get(matchedText.toLowerCase());
             let span = document.createElement('span');
-            span.style.color = matched_item.color;
-            span.style.fontWeight = matched_item.bold ? 'bold' : 'normal';
             span.textContent = matchedText;
             span.className = 'ColorCoding';
             span.dataset.name = matchedText;

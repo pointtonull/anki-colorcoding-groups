@@ -1,28 +1,34 @@
 """Driver add-on for tools/make_screenshots.py. NOT part of the shipped add-on.
 
-make_screenshots.py copies this file to <sandbox>/addons21/zz_screenshots/__init__.py (it sorts after
-`colorcoding_groups`, so that add-on is already loaded). Once the sandbox profile is open it builds a demo
-note from invented words, drives the add-on's own dialogs and menus, and writes PNGs to $COLORCODING_SHOTS_OUT.
-Progress goes to $COLORCODING_SHOTS_LOG; an empty `done` file next to it marks a finished run.
+make_screenshots.py copies this file to <sandbox>/addons21/zz_driver/__init__.py (it sorts after the add-on, so that is
+already loaded). Once the sandbox profile is open it builds a demo note from invented words, drives the add-on's own
+dialogs and menus, and writes PNGs to $COLORCODING_SHOTS_OUT. Every step waits for the thing it needs (see
+driver_kit.py), and a wait that never ends stops the run with a TIMEOUT that says what was missing.
 """
 import importlib
 import os
-import traceback
 
 from aqt import dialogs, gui_hooks, mw
-from PyQt6.QtCore import QPoint, QRect, QTimer
+from PyQt6.QtCore import QPoint, QRect
 from PyQt6.QtGui import QImage, QPainter
 from PyQt6.QtWidgets import QApplication, QMenu, QPushButton
 
+from . import driver_kit as kit
+
 OUT = os.environ["COLORCODING_SHOTS_OUT"]
-LOG = os.environ["COLORCODING_SHOTS_LOG"]
 
 FRONT = "Who published the first computer algorithm in 1843?"
 # "Manchester" is deliberately not in the example config: it is the word we select and assign.
 BACK = ("Ada Lovelace, working with Charles Babbage in London. "
         "Alan Turing studied in Cambridge and later worked in Manchester.")
 PICK_WORD = "Manchester"
+EXPECTED_SPANS = 6  # 1843, Ada Lovelace, Charles Babbage, London, Alan Turing, Cambridge
 
+FIELDS_READY_JS = ("(function(){var n=0;document.querySelectorAll('*').forEach(function(e){if(e.shadowRoot){"
+                   "var ed=e.shadowRoot.querySelector('anki-editable');if(ed&&ed.textContent.length>0)n++;}});"
+                   "return n>=2;})()")
+SPANS_READY_JS = ("(function(){var n=0;document.querySelectorAll('*').forEach(function(e){if(e.shadowRoot)"
+                  "n+=e.shadowRoot.querySelectorAll('.ColorCoding').length;});return n>=%d;})()" % EXPECTED_SPANS)
 SELECT_JS = """
 (function (word) {
     var hosts = Array.prototype.filter.call(document.querySelectorAll('*'), function (e) { return e.shadowRoot; });
@@ -41,19 +47,27 @@ SELECT_JS = """
             var sel = root.getSelection ? root.getSelection() : window.getSelection();
             sel.removeAllRanges();
             sel.addRange(range);
-            return 'selected';
+            return String(sel).indexOf(word) >= 0;
         }
     }
-    return 'not found';
+    return false;
 })(%r)
 """
 
-state = {}
+
+# --- saving ----------------------------------------------------------------------------------------------------
+
+def varied(image, minimum=3):
+    """A capture that went wrong is flat (all one colour); a real window has several in any sample."""
+    width, height = image.width(), image.height()
+    sample = {image.pixel(x * (width - 1) // 29, y * (height - 1) // 29) for x in range(30) for y in range(30)}
+    return len(sample) >= minimum
 
 
-def log(message):
-    with open(LOG, "a", encoding="utf-8") as file:
-        file.write(message + "\n")
+def store(image, name):
+    kit.check(f"{name}: the capture is not blank", varied(image), f"{image.width()}x{image.height()}")
+    kit.check(f"{name}: saved", image.save(os.path.join(OUT, name)))
+    kit.log(f"saved {name}: {image.width()}x{image.height()}px")
 
 
 def neutral(window):
@@ -68,16 +82,18 @@ def neutral(window):
 
 def save(widget, name):
     neutral(widget)
-    pixmap = widget.grab()
-    ok = pixmap.save(os.path.join(OUT, name))
-    log(f"saved {name}: ok={ok} {pixmap.width()}x{pixmap.height()}px dpr={pixmap.devicePixelRatio()}")
+    store(widget.grab().toImage(), name)
+
+
+def save_popup(menu, name):
+    # widget.grab() leaves a popup's background out; grabbing the popup's own window (only that window, never the
+    # desktop around it) keeps it.
+    store(menu.screen().grabWindow(int(menu.winId())).toImage(), name)
 
 
 def save_composite(base, menus, name):
     """The window with its popup menus laid over it where they sit on screen (popups are separate windows)."""
     parts = [(base.grab().toImage(), QRect(base.mapToGlobal(QPoint(0, 0)), base.size()))]
-    # widget.grab() leaves a popup's background out; grabbing the popup's own window (only that window,
-    # never the desktop around it) keeps it.
     parts += [(menu.screen().grabWindow(int(menu.winId())).toImage(), menu.geometry()) for menu in menus]
     dpr = parts[0][0].devicePixelRatio()
     left = min(g.left() for _, g in parts)
@@ -91,142 +107,111 @@ def save_composite(base, menus, name):
     for image, geometry in parts:
         painter.drawImage(QPoint(geometry.left() - left, geometry.top() - top), image)
     painter.end()
-    log(f"saved {name}: ok={canvas.save(os.path.join(OUT, name))} {canvas.width()}x{canvas.height()}px")
+    store(canvas, name)
 
 
-def cc():
-    return importlib.import_module("colorcoding_groups")
+def shoot_dialog(dialog, name, what, size=None):
+    """Show a dialog, wait until it is really on screen, photograph it, close it. The dialogs are resizable, so
+    `size` trims the empty space the default size leaves."""
+    kit.step(what)
+    if size:
+        dialog.resize(*size)
+    dialog.show()
+    yield kit.wait(lambda: kit.exposed(dialog), f"{what} to appear on screen")
+    yield 400  # let it finish painting
+    save(dialog, name)
+    dialog.close()
+    yield 200
 
 
-# Each step returns the milliseconds to wait before the next one.
+# --- the scenario ----------------------------------------------------------------------------------------------
 
-def step_theme():
+def scenario():
+    cc = importlib.import_module(os.environ.get("COLORCODING_ADDON", "colorcoding_groups"))
+
+    kit.step("dark theme")
     from aqt.theme import Theme, theme_manager
     mw.pm.set_theme(Theme.DARK)  # the example colours are tuned for a dark background
     theme_manager.apply_style()
-    return 800
+    yield 800
 
-
-def step_open_editor():
+    kit.step("open the Add window with the demo note")
     add = dialogs.open("AddCards", mw)
-    state["add"] = add
     add.resize(1000, 460)
     add.move(80, 80)
     note = mw.col.new_note(mw.col.models.by_name("Basic"))
-    note["Front"] = FRONT
-    note["Back"] = BACK
+    note["Front"], note["Back"] = FRONT, BACK
     add.set_note(note, mw.col.decks.id("Default"))
-    return 3000
+    yield kit.wait(lambda: kit.exposed(add), "the Add window to appear on screen")
+    yield kit.js_until(add.editor.web, FIELDS_READY_JS, "both note fields to render in the editor", 20000)
 
+    kit.step("colour the words (what the C button does)")
+    cc.performConversion(add.editor)
+    yield kit.js_until(add.editor.web, SPANS_READY_JS, f"{EXPECTED_SPANS} coloured words to appear in the editor")
+    yield 500  # let the colours paint
+    save(add, "editor.png")
 
-def step_colour():
-    cc().performConversion(state["add"].editor)  # what the "C" button does
-    return 2000
-
-
-def step_shot_editor():
-    save(state["add"], "editor.png")
-    return 300
-
-
-def step_select():
-    state["add"].editor.web.evalWithCallback(SELECT_JS % PICK_WORD, lambda result: log(f"select: {result}"))
-    return 800
-
-
-def step_context_menu():
-    # Anki's own contextMenuEvent needs a real Chromium click, so build the menu the way it does: its
-    # standard entries (stand-ins here), then the editor_will_show_context_menu hook that add-ons use.
-    web = state["add"].editor.web
+    kit.step("select a word and open the right-click menu")
+    selected = kit.js_until(add.editor.web, SELECT_JS % PICK_WORD, f"the word {PICK_WORD} to be selected in the editor")
+    yield selected
+    yield 500
+    web = add.editor.web
     menu = QMenu(web)
+    # Anki's own contextMenuEvent needs a real Chromium click, so build the menu the way it does: its standard
+    # entries (stand-ins here), then the editor_will_show_context_menu hook that add-ons use.
     for label in ("Cut", "Copy", "Paste"):
         menu.addAction(label)
     gui_hooks.editor_will_show_context_menu(web, menu)
     menu.popup(web.mapToGlobal(QPoint(150, 215)))
-    action = next(a for a in menu.actions() if "color group" in a.text())
-    menu.setActiveAction(action)  # opens the submenu
-    state["menu"], state["action"] = menu, action
-    return 1000
-
-
-def step_shot_context_menu():
-    menu, submenu = state["menu"], state["action"].menu()
-    log(f"menu visible={menu.isVisible()} submenu visible={submenu.isVisible()}")
-    save_composite(state["add"], [menu, submenu], "context-menu.png")
+    yield kit.wait(menu.isVisible, "the right-click menu to open")
+    action = next((a for a in menu.actions() if "color group" in a.text()), None)
+    kit.check("the add-on's 'Set color group' entry is in the menu", action is not None, [a.text() for a in menu.actions()])
+    if action is not None:
+        menu.setActiveAction(action)  # opens the submenu
+        submenu = action.menu()
+        yield kit.wait(submenu.isVisible, "the 'Set color group' submenu to open")
+        yield 300
+        save_composite(add, [menu, submenu], "context-menu.png")
     menu.close()
-    return 300
+    yield 300
 
+    yield from shoot_dialog(cc.GroupPickerDialog(PICK_WORD, cc.get_groups(), parent=add), "group-picker.png",
+                            "the group picker", size=(320, 300))
+    config = cc.read_config()
+    yield from shoot_dialog(cc.GroupManagerDialog(config["groups"], config["entries"], parent=add),
+                            "group-manager.png", "the group manager", size=(480, 330))
 
-def step_open_picker():
-    dialog = cc().GroupPickerDialog(PICK_WORD, cc().get_groups(), parent=state["add"])
-    dialog.resize(320, 300)  # the dialogs are resizable; trim the empty space below the list
-    dialog.show()
-    state["dialog"] = dialog
-    return 700
-
-
-def step_shot_picker():
-    save(state["dialog"], "group-picker.png")
-    state["dialog"].close()
-    return 300
-
-
-def step_open_manager():
-    config = cc().read_config()
-    dialog = cc().GroupManagerDialog(config["groups"], config["entries"], parent=state["add"])
-    dialog.resize(480, 330)
-    dialog.show()
-    state["dialog"] = dialog
-    return 700
-
-
-def step_shot_manager():
-    save(state["dialog"], "group-manager.png")
-    state["dialog"].close()
-    return 300
-
-
-def step_open_settings():
-    cc().complex_settings_gui()
+    kit.step("the settings window")
+    cc.complex_settings_gui()
     window = mw.myWidget
     window.resize(760, 500)  # wide enough for "Charles Babbage" in the Word column
-    return 1000
+    yield kit.wait(lambda: kit.exposed(window), "the settings window to appear on screen")
+    yield 400
+    save(window, "settings.png")
+    window.close()
+    yield 200
+
+    for name in ("Languages", "Medicine", "Medicine::Drugs", "Programming", "Travel"):
+        mw.col.decks.id(name)  # decks to choose from
+    cc.write_settings({"autoColorAllFields": True, "autoColorDecks": ["Medicine", "Programming"]})
+    yield from shoot_dialog(cc.SettingsDialog(add), "settings-decks.png", "the settings dialog with the deck scope",
+                            size=(440, 380))
+
+    kit.step("the deck gear menu")
+    menu = QMenu(mw)
+    # The deck list's gear menu: Anki's own entries (stand-ins here), then the hook add-ons use.
+    for label in ("Rename", "Options", "Export", "Delete"):
+        menu.addAction(label)
+    gui_hooks.deck_browser_will_show_options_menu(menu, int(mw.col.decks.id("Medicine")))
+    menu.popup(QPoint(240, 240))
+    yield kit.wait(menu.isVisible, "the deck gear menu to open")
+    yield 300
+    save_popup(menu, "deck-menu.png")
+    menu.close()
+
+    kit.step("done")
+    add.set_note(mw.col.new_note(mw.col.models.by_name("Basic")), mw.col.decks.id("Default"))  # blank: no "Discard?" prompt
+    add.close()
 
 
-def step_shot_settings():
-    save(mw.myWidget, "settings.png")
-    mw.myWidget.close()
-    return 300
-
-
-def step_finish():
-    log("done")
-    open(os.path.join(os.path.dirname(LOG), "done"), "w").close()
-    state["add"].close()
-    mw.close()
-    return 0
-
-
-STEPS = [step_theme, step_open_editor, step_colour, step_shot_editor, step_select, step_context_menu,
-         step_shot_context_menu, step_open_picker, step_shot_picker, step_open_manager, step_shot_manager,
-         step_open_settings, step_shot_settings, step_finish]
-
-
-def run(steps):
-    if not steps:
-        return
-    step, rest = steps[0], steps[1:]
-    try:
-        delay = step() or 0
-    except Exception:
-        log(f"{step.__name__} failed:\n{traceback.format_exc()}")
-        delay = 100  # keep going: one failed shot should not lose the others
-    QTimer.singleShot(delay, lambda: run(rest))
-
-
-def on_profile_open():
-    log("profile open")
-    QTimer.singleShot(2000, lambda: run(STEPS))
-
-
-gui_hooks.profile_did_open.append(on_profile_open)
+kit.start(scenario)

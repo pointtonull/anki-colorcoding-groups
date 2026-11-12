@@ -8,78 +8,50 @@ user_files/config.example.json (invented words), and tools/screenshot_driver.py 
     python3 tools/make_screenshots.py [--anki PATH] [--out DIR] [--keep]
 
 Needs Anki installed (default: the macOS app bundle). Windows of the sandbox Anki flash up for about half a
-minute; leave the mouse and keyboard alone meanwhile. Run it again after any UI change.
+minute; no need to touch anything. The run is all-or-nothing: the images are written to a scratch folder and only
+replace the ones in --out when every expected image was made and nothing went wrong, so a failed run never leaves a
+half-updated set. If something it waits for does not appear it stops with a TIMEOUT line saying what, and keeps PNGs
+of what was on screen (in the sandbox folder it names).
+Exit status: 0 done, 1 a step failed or timed out, 2 the harness itself gave up (Anki stuck).
 """
 import argparse
-import os
 import shutil
-import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
-DEFAULT_ANKI = "/Applications/Anki.app/Contents/MacOS/Anki"
-DEV_DIRS = ("tools/", "docs/")  # not part of the add-on, so not copied into the sandbox
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sandbox  # noqa: E402
 
-
-def build_sandbox(base):
-    addons = base / "addons21"
-    addon = addons / "colorcoding_groups"
-    listing = subprocess.run(["git", "-C", str(REPO), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-                             check=True, capture_output=True, text=True).stdout
-    for rel in filter(None, listing.split("\0")):
-        if rel.startswith(DEV_DIRS) or not (REPO / rel).is_file():
-            continue
-        target = addon / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(REPO / rel, target)
-    user_files = addon / "user_files"
-    user_files.mkdir(exist_ok=True)
-    shutil.copy2(REPO / "user_files" / "config.example.json", user_files / "config.json")
-    (user_files / "settings.json").write_text('{"autoColorAllFields": true}')
-    driver = addons / "zz_screenshots"
-    driver.mkdir()
-    shutil.copy2(REPO / "tools" / "screenshot_driver.py", driver / "__init__.py")
+EXPECTED = ["editor.png", "context-menu.png", "group-picker.png", "group-manager.png", "settings.png",
+            "settings-decks.png", "deck-menu.png"]
 
 
 def main():
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
-    parser.add_argument("--anki", default=DEFAULT_ANKI, help="Anki executable (default: %(default)s)")
-    parser.add_argument("--out", type=Path, default=REPO / "docs" / "screenshots", help="where to write the PNGs")
-    parser.add_argument("--timeout", type=int, default=120, help="seconds to wait for the run (default: %(default)s)")
+    parser.add_argument("--anki", default=sandbox.DEFAULT_ANKI, help="Anki executable (default: %(default)s)")
+    parser.add_argument("--out", type=Path, default=sandbox.REPO / "docs" / "screenshots", help="where to put the PNGs")
+    parser.add_argument("--timeout", type=int, default=120, help="seconds for the whole run (default: %(default)s)")
+    parser.add_argument("--startup-timeout", type=int, default=45, help="seconds for Anki to open the profile (default: %(default)s)")
     parser.add_argument("--keep", action="store_true", help="keep the sandbox folder (its logs) afterwards")
     args = parser.parse_args()
 
-    base = Path(tempfile.mkdtemp(prefix="colorcoding-shots-"))
-    args.out.mkdir(parents=True, exist_ok=True)
-    build_sandbox(base)
-    log, done = base / "driver.log", base / "done"
-    env = dict(os.environ,
-               ANKI_SINGLE_INSTANCE_KEY=f"colorcoding-shots-{os.getpid()}",  # don't hand over to a running Anki
-               COLORCODING_SHOTS_OUT=str(args.out.resolve()),
-               COLORCODING_SHOTS_LOG=str(log))
-    with open(base / "anki.log", "w") as anki_log:
-        anki = subprocess.Popen([args.anki, "-b", str(base), "-p", "User 1", "-l", "en"],
-                                env=env, stdout=anki_log, stderr=subprocess.STDOUT)
-        deadline = time.time() + args.timeout
-        while time.time() < deadline and anki.poll() is None and not done.exists():
-            time.sleep(1)
-        if anki.poll() is None:  # give it a moment to quit by itself, then stop it
-            time.sleep(5)
-            anki.terminate()
-            try:
-                anki.wait(10)
-            except subprocess.TimeoutExpired:
-                anki.kill()
-
-    print(log.read_text() if log.exists() else "driver never started (see anki.log)")
-    if args.keep or not done.exists():  # keep the logs when something went wrong
-        print(f"sandbox: {base}")
-    else:
-        shutil.rmtree(base)
-    return 0 if done.exists() else 1
+    with tempfile.TemporaryDirectory(prefix="colorcoding-shots-out-") as scratch:
+        result = sandbox.run_driver(sandbox.REPO / "tools" / "screenshot_driver.py", Path(scratch), args.anki,
+                                    args.timeout, args.keep, startup_timeout=args.startup_timeout)
+        print(result.log)
+        if not result.ok:
+            print("Not touching", args.out, "- the run did not complete.")
+            return result.exit_code
+        missing = [name for name in EXPECTED if not (Path(scratch) / name).is_file()]
+        if missing:
+            print("The run finished but these images are missing, so nothing was copied:", ", ".join(missing))
+            return 1
+        args.out.mkdir(parents=True, exist_ok=True)
+        for name in EXPECTED:
+            shutil.copy2(Path(scratch) / name, args.out / name)
+    print(f"Wrote {len(EXPECTED)} images to {args.out}")
+    return 0
 
 
 if __name__ == "__main__":
