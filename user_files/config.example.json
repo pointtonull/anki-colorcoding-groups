@@ -8,9 +8,14 @@
     "entries": [
         {"word": "Paris", "group": "Places"},
         {"word": "Kyoto", "group": "Places"},
+        {"word": "London", "group": "Places"},
+        {"word": "Cambridge", "group": "Places"},
         {"word": "Ada Lovelace", "group": "People"},
         {"word": "Alan Turing", "group": "People"},
+        {"word": "Charles Babbage", "group": "People"},
+        {"word": "1843", "group": "Dates"},
         {"word": "1969", "group": "Dates"},
-        {"word": "async", "group": "Code"}
+        {"word": "async", "group": "Code"},
+        {"word": "await", "group": "Code"}
     ]
 }

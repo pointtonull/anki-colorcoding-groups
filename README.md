@@ -7,6 +7,30 @@ Change a group's colour once and all its words follow.
 It builds on [**ColorCoding** by Marc Schubert](https://ankiweb.net/shared/info/2113325087)
 ([source](https://github.com/schubertmc/ColorCoding)) — see [Credits](#credits-and-licence).
 
+<img src="docs/screenshots/editor.png" width="800" alt="Anki's editor with the words Ada Lovelace, Charles Babbage and Alan Turing in pink bold, London and Cambridge in blue and 1843 in yellow">
+
+*Every word you have put in a group is coloured in every field of the note. The **C** button in the toolbar
+re-colours; **G** opens the group picker.*
+
+## Screenshots
+
+**Right-click a selected word → *🎨 Set color group*** to put it in a group (or create one):
+
+<img src="docs/screenshots/context-menu.png" width="800" alt="The editor's right-click menu with a Set color group submenu listing Code, Dates, People, Places and Create new group">
+
+**The group picker** (`Meta+Shift+G`, the physical Control key on macOS) is keyboard-only: type to filter, ↑/↓, Enter.
+**The group manager** sets each group's colour and bold flag, and renames or deletes it:
+
+<img src="docs/screenshots/group-picker.png" width="320" alt="The group picker dialog listing the groups, with Create new group and Manage groups at the bottom">
+<img src="docs/screenshots/group-manager.png" width="480" alt="The group manager: a table of groups with colour swatches, a bold flag and Edit and Delete buttons">
+
+**The settings window** (*Tools → 🎨 Color Coding 🌈*) lists every word with its group and colour:
+
+<img src="docs/screenshots/settings.png" width="760" alt="The settings window: a table of words, their groups and colours">
+
+*The screenshots are made from the add-on's real windows, in a throwaway Anki profile with invented words:
+`python3 tools/make_screenshots.py` regenerates them.*
+
 ## What it adds
 
 - **Groups with a colour and a bold flag.** Words belong to a group; the group decides how they look.
