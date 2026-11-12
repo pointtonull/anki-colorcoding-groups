@@ -25,7 +25,7 @@ markup as the original, so notes coloured by either version keep working.
 
 Anki 23.10 or newer (the add-on imports PyQt6 directly).
 
-1. Install from AnkiWeb (*Tools → Add-ons → Get Add-ons…*, code in the add-on's AnkiWeb page), or from a package
+1. Install from [AnkiWeb](https://ankiweb.net/shared/info/267803161) (*Tools → Add-ons → Get Add-ons…*, code `267803161`), or from a package
    built from this repo: `git archive --format=zip -o colorcoding-groups.ankiaddon HEAD`, then double-click the file.
    Or copy this folder into Anki's add-ons folder (*Tools → Add-ons → View Files*) as `colorcoding_groups/`.
 2. Restart Anki. A **🎨 Color Coding 🌈** entry appears under *Tools*.
