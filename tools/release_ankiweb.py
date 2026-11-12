@@ -85,7 +85,7 @@ def git(repo, *args):
     done = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
     if done.returncode:
         raise ReleaseError(f"git {' '.join(args)} failed: {done.stderr.strip() or done.stdout.strip()}")
-    return done.stdout.strip()
+    return done.stdout.rstrip("\n")  # not strip(): the first line of `status --porcelain` starts with a space
 
 
 def preflight(repo):
@@ -245,8 +245,9 @@ def fetch_served(build, timeout=30):
 
 # Each script starts with a tag comment so tests can recognise it. They avoid Array.prototype.x.call(NodeList, ...):
 # FoxMCP's content-script sandbox rejects it.
+# The version inputs have no `type` attribute, so `input[type=text]` misses them (found on the live page).
 JS_READ_FORM = """/*ankiweb:read-form*/(function(){
-  var texts = [], inputs = document.querySelectorAll('input[type=text]');
+  var texts = [], inputs = document.querySelectorAll('input[type=text], input:not([type])');
   for (var i = 0; i < inputs.length; i++) { texts.push(inputs[i].value); }
   var area = document.querySelector('textarea'), file = document.querySelector('input[type=file]');
   return JSON.stringify({url: location.href, ready: !!(area && file) && document.readyState === 'complete',

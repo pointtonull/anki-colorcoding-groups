@@ -219,6 +219,33 @@ class JavaScriptSyntaxTests(unittest.TestCase):
                 done = subprocess.run(["node", "--check", str(path)], capture_output=True, text=True)
                 self.assertEqual(done.returncode, 0, f"{name}: {done.stderr}")
 
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_the_form_reader_finds_every_field_of_the_page_as_it_really_is(self):
+        """Runs JS_READ_FORM in node against a DOM table that encodes what the live AnkiWeb form does: its two version
+        inputs have no `type` attribute, so `input[type=text]` alone returns only 3 of the 5 text fields."""
+        def field(value):
+            return {"value": value}
+        dom = {
+            "input[type=text]": [field("Title"), field("tags"), field("https://support")],
+            "input[type=text], input:not([type])": [field("Title"), field("tags"), field("https://support"),
+                                                    field("23.10.0"), field("26.05.0")],
+            "textarea": [{"value": "the description"}],
+            "input[type=file]": [{"files": []}],
+        }
+        harness = ("var table = %s;\nvar document = {readyState: 'complete', body: {innerText: 'page'},\n"
+                   "  querySelectorAll: function(s){ return table[s] || []; }, querySelector: function(s){ return (table[s] || [null])[0]; }};\n"
+                   "var location = {href: 'https://ankiweb.net/shared/upload?id=1'};\n"
+                   "console.log(%s);\n") % (json.dumps(dom), release.JS_READ_FORM)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "read.js"
+            path.write_text(harness, encoding="utf-8")
+            done = subprocess.run(["node", str(path)], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        value = json.loads(done.stdout)
+        self.assertEqual(value["texts"], ["Title", "tags", "https://support", "23.10.0", "26.05.0"])
+        self.assertEqual(value["description"], "the description")
+        self.assertTrue(value["ready"])
+
     def test_script_results_are_parsed(self):
         self.assertEqual(release.script_value('Script result from tab 5 (https://x/y):\n{"a": 1}'), {"a": 1})
         self.assertEqual(release.script_value('{"a": 1}'), {"a": 1})
