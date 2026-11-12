@@ -25,10 +25,15 @@ markup as the original, so notes coloured by either version keep working.
 
 Anki 23.10 or newer (the add-on imports PyQt6 directly).
 
-1. Remove the original ColorCoding add-on if you have it. Both add the same menu entry and hooks, so run only one.
-2. Copy this folder into Anki's add-ons folder (Tools → Add-ons → *View Files*) as `colorcoding_groups/`, or build a
-   package with `zip -r colorcoding-groups.ankiaddon . -x ".git/*"` and double-click the resulting file.
-3. Restart Anki. A **🎨 Color Coding 🌈** entry appears under *Tools*.
+1. Install from AnkiWeb (*Tools → Add-ons → Get Add-ons…*, code in the add-on's AnkiWeb page), or from a package
+   built from this repo: `git archive --format=zip -o colorcoding-groups.ankiaddon HEAD`, then double-click the file.
+   Or copy this folder into Anki's add-ons folder (*Tools → Add-ons → View Files*) as `colorcoding_groups/`.
+2. Restart Anki. A **🎨 Color Coding 🌈** entry appears under *Tools*.
+
+The original ColorCoding add-on adds the same menu entry and hooks, so only one can run: installing this one
+**disables the original automatically** (its `manifest.json` lists it under `conflicts`). Your words and groups live in
+each add-on's own `user_files/config.json`, so to carry them over copy the original's file into this add-on's
+`user_files/` (*Tools → Add-ons → select → View Files*). The old flat format is upgraded on first load.
 
 ## Your data
 

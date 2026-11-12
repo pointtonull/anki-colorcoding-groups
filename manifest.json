@@ -1,1 +1,6 @@
-{"name": "Color Coding Groups", "package": "colorcoding_groups"}
+{
+    "name": "Color Coding Groups",
+    "package": "colorcoding_groups",
+    "conflicts": ["2113325087", "ColorCoding"],
+    "homepage": "https://github.com/pointtonull/anki-colorcoding-groups"
+}

@@ -1,0 +1,4 @@
+# Files left out of the add-on package built with `git archive` (see README → Install).
+.gitattributes export-ignore
+.gitignore     export-ignore
+CLAUDE.md      export-ignore
